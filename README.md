@@ -284,12 +284,117 @@ python gesture_webcam.py --hands 1       # 손 1개만
 
 ---
 
+## 10. 심화 — 나만의 제스처 학습하기
+
+> 🌐 **라이브 데모:** <https://higogo1.github.io/gesture-recognition/>
+> (nike → Nike 로고 · ok → 👌 · 멈춰 → 😡)
+
+### 10-1. 아이디어: "손 찾기"는 빌리고, "분류"만 새로 배운다
+
+```
+ 웹캠 ─▶ MediaPipe (기존 모델) ─▶ 손 관절 21개 ─▶ 특징 63개 ─▶ 내 분류기 ─▶ "멈춰"
+         └──── 그대로 재사용 ────┘                         └ 새로 학습 ┘
+```
+
+- 손을 찾고 관절 좌표를 뽑는 어려운 일은 기존 `gesture_recognizer.task`가 담당
+- 우리는 **좌표 → 제스처 이름**만 학습 → 데이터가 제스처당 200개 정도면 충분
+- 분류기는 scikit-learn의 작은 신경망(`MLPClassifier`) 사용
+  (공식 도구 *MediaPipe Model Maker*는 구버전 TensorFlow가 필요해 Windows · Python 3.14에서 설치가 까다로움)
+
+### 10-2. 특징 만들기 (정규화)
+
+| 단계 | 하는 일 | 효과 |
+|---|---|---|
+| ① 월드 랜드마크 사용 | 화면 좌표 대신 미터 단위 3D 좌표 | 화면 비율 영향 없음 |
+| ② 손목 기준 이동 | 모든 점 − 0번(손목) | 손이 화면 **어디에** 있든 같음 |
+| ③ 크기로 나누기 | 손목에서 가장 먼 점까지 거리로 나눔 | 손이 **크든 작든**, 카메라와 **멀든 가깝든** 같음 |
+| ④ 왼손 x축 반전 | Left이면 x × −1 | 왼손·오른손을 **한 모델**로 학습 |
+
+→ 21개 × (x, y, z) = **63차원 벡터**. 이 코드는 `gesture_features.py`, `web/classifier.js`에 똑같이 들어 있습니다.
+
+### 10-3. 실습: 수집 → 훈련 → 인식 (UI 앱)
+
+```powershell
+pip install scikit-learn joblib pillow
+python gesture_studio.py
+```
+
+| 단계 | 조작 |
+|---|---|
+| ① 수집 | 제스처 이름 입력 → **추가** → 목록에서 선택 → `Space`로 녹화 시작/정지 |
+| ② 훈련 | **훈련 시작** → 로그에 정확도 · 혼동 행렬 출력 → 자동으로 인식 모드 |
+| ③ 인식 | 큰 글씨로 결과 + 클래스별 확률 막대, 최소 확신도 슬라이더 |
+
+> 💡 **꼭 `none` 클래스를 만드세요.** 없으면 아무 손이나 억지로 다른 제스처로 분류합니다.
+> 💡 각도 · 거리 · 손 방향을 바꿔가며 제스처당 **200개 이상** 모으면 좋습니다.
+
+CLI 버전도 있습니다: `collect_gestures.py --labels ...` → `train_gestures.py` → `custom_gesture_webcam.py`
+
+### 10-4. 웹으로 옮기기
+
+```powershell
+python export_web_model.py                      # models/*.joblib → web/model.json
+python -m http.server 8000 --directory web      # http://localhost:8000
+```
+
+- 브라우저에서는 **MediaPipe JS(`@mediapipe/tasks-vision`)** 가 손 관절을 뽑고
+- `model.json`(정규화 평균/표준편차 + 신경망 가중치)으로 **JS가 직접 행렬 계산** → 서버 불필요
+- 검증: 같은 입력에 대해 Python과 JS 확률 차이 ≈ 1e-7
+- 제스처별 오버레이는 `web/app.js`의 `OVERLAYS`에서 설정 (`"멈춰": { emoji: "😡" }`)
+- 5프레임 연속 같은 결과일 때만 바뀌게 해서 깜빡임 방지
+
+> ⚠️ 웹캠은 **보안 컨텍스트(https 또는 localhost)** 에서만 동작합니다. HTML 파일을 더블클릭해서 열면 카메라가 안 켜집니다.
+
+### 10-5. GitHub Pages 배포
+
+`.github/workflows/pages.yml` 이 `web/` 폴더를 자동 배포합니다.
+`web/` 안의 파일을 바꿔 `main`에 push하면 1~2분 뒤 사이트에 반영됩니다.
+
+```powershell
+python export_web_model.py
+git add web/model.json
+git commit -m "Update model"
+git push
+```
+
+### 10-6. 추가 용어
+
+| 용어 | 한 줄 설명 |
+|---|---|
+| **특징 (Feature)** | 모델에 넣는 숫자 벡터. 여기서는 정규화된 관절 좌표 63개 |
+| **월드 랜드마크** | 손 중심 기준 미터 단위 3D 좌표 (화면 크기와 무관) |
+| **클래스 / 라벨** | 분류할 범주의 이름 (`nike`, `ok`, `멈춰`, `none`) |
+| **MLP** | Multi-Layer Perceptron. 층이 여러 개인 기본 신경망 (63 → 64 → 32 → 클래스 수) |
+| **StandardScaler** | 각 특징을 평균 0, 표준편차 1로 맞추는 전처리 |
+| **ReLU / Softmax** | 은닉층 활성화 함수(음수→0) / 출력을 확률(합=1)로 바꾸는 함수 |
+| **train/test split** | 데이터를 학습용 80% · 평가용 20%로 나누기 |
+| **혼동 행렬** | 정답(행) vs 예측(열) 표. 어떤 제스처끼리 헷갈리는지 보여줌 |
+| **joblib** | scikit-learn 모델을 파일로 저장/불러오는 도구 |
+| **Tkinter** | 파이썬 기본 GUI 라이브러리 |
+| **보안 컨텍스트** | https 또는 localhost. 카메라 같은 민감한 API가 허용되는 환경 |
+| **GitHub Pages / Actions** | GitHub의 정적 웹 호스팅 / 자동 실행(CI) 도구 |
+
+---
+
 ## 📂 파일 구성
 
 ```
 gesture recognition/
-├── README.md               ← 이 강의노트
-├── gesture_webcam.py       ← 웹캠 실시간 제스처 인식 코드
-├── .gitignore
-└── gesture_recognizer.task ← (직접 다운로드, git 미포함)
+├── README.md                  ← 이 강의노트
+├── gesture_webcam.py          ← 기본 제스처 7종 웹캠 인식
+├── gesture_features.py        ← 공통: 관절 → 특징 63개
+├── gesture_studio.py          ← UI 앱: 수집 · 훈련 · 인식
+├── collect_gestures.py        ← (CLI) 수집
+├── train_gestures.py          ← (CLI) 훈련 / train() 함수
+├── custom_gesture_webcam.py   ← (CLI) 내 제스처 인식
+├── export_web_model.py        ← 모델 → web/model.json
+├── web/                       ← 웹 버전 (GitHub Pages 배포)
+│   ├── index.html
+│   ├── app.js                 ← 웹캠 · 인식 · 오버레이
+│   ├── classifier.js          ← 특징 계산 + MLP 추론 (JS)
+│   └── model.json             ← 훈련된 가중치
+├── .github/workflows/pages.yml
+├── gesture_recognizer.task    ← (직접 다운로드, git 미포함)
+├── data/                      ← 수집 데이터 (git 미포함)
+└── models/                    ← 훈련 모델 .joblib (git 미포함)
 ```
